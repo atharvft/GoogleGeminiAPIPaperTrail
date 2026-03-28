@@ -151,10 +151,10 @@ function handleFileSelect(file) {
 const PIPELINE_STEPS = [
   'Upload Image',
   'OpenCV preprocessing',
-  'Full Page OCR',
-  'Text parsing using keywords',
+  'Gemini Vision OCR',
+  'Text parsing & field extraction',
   'Fields extracted',
-  'Confidence from OCR engine',
+  'Confidence from AI engine',
 ];
 
 function startPipelineAnimation(file) {
@@ -389,7 +389,7 @@ function renderFormFields() {
     banner.className = 'ocr-method-banner';
     banner.innerHTML = `
       <span class="ocr-engine-icon">🔬</span>
-      <span>Extracted via <strong>${ocrMethod}</strong> · Full-page OCR + keyword parsing</span>
+      <span>Extracted via <strong>${ocrMethod}</strong> · AI-powered form extraction</span>
       <span class="conf-badge ${confClass(state.classificationConf)}">${(state.classificationConf * 100).toFixed(0)}% overall</span>
     `;
     container.appendChild(banner);

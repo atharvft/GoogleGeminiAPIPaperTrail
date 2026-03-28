@@ -26,6 +26,7 @@ from ..sarvam_ocr import (
 from ..template_classifier import classify_template
 from ..database import save_birth_certificate, save_residence_certificate
 from ..models import FormUploadResponse
+from ..gemini_extractor import extract_with_gemini
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
@@ -105,9 +106,21 @@ async def upload_form(file: UploadFile = File(...)):
 
         print(f"✓ Form type: {form_type}  |  Department: {department}")
 
-        # ── 5. Text parsing using keywords ─────────────────────────────────
-        print(f"\n🔍 Step 5: Keyword-based text parsing for '{form_type}'")
-        extracted_data = parse_markdown_to_fields(full_text)
+        # ── 5. Text extraction: Try Gemini first, fallback to keyword parsing ─
+        print(f"\n🔍 Step 5: Field extraction for '{form_type}'")
+        
+        # Try Gemini extraction first
+        gemini_result = extract_with_gemini(file_path, form_type)
+        if gemini_result.get("success"):
+            extracted_data = gemini_result.get("extracted_data", {})
+            ocr_method = "Gemini Vision (gemini-2.5-flash)"
+            print(f"   ✓ Gemini extracted {len(extracted_data)} fields")
+        else:
+            # Fallback to keyword parsing
+            print(f"   ⚠ Gemini unavailable: {gemini_result.get('error', 'unknown')}")
+            print(f"   → Falling back to keyword parsing")
+            extracted_data = parse_markdown_to_fields(full_text)
+            ocr_method = f"Full-page OCR ({ocr_source}) + keyword parser"
 
         # ── 6. Confidence from OCR engine ─────────────────────────────────
         print(f"\n🔍 Step 6: OCR engine confidence")
@@ -154,7 +167,7 @@ async def upload_form(file: UploadFile = File(...)):
             verification_flags=verification_flags,
             classification_confidence=ocr_confidence,
             ocr_confidence=ocr_confidence,
-            ocr_method=f"Full-page OCR ({ocr_source}) + keyword parser",
+            ocr_method=ocr_method,
         )
 
     except HTTPException:
