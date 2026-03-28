@@ -9,7 +9,7 @@
     content="PaperTrail: Handwritten government form digitisation, extraction, and intelligent routing pipeline for Indian government offices." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
 
 <body>
@@ -80,7 +80,7 @@
             </svg>
           </div>
           <p class="upload-title">Drag & drop your form here</p>
-          <p class="upload-sub">Supports JPG, PNG, BMP, WEBP</p>
+          <p class="upload-sub">Supports JPG, PNG, BMP, WEBP, PDF</p>
           <label class="btn btn-outline" for="file-input">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -88,7 +88,7 @@
             </svg>
             Browse File
           </label>
-          <input type="file" id="file-input" accept=".jpg,.jpeg,.png,.bmp,.webp" style="display:none" />
+          <input type="file" id="file-input" accept=".jpg,.jpeg,.png,.bmp,.webp,.pdf" style="display:none" />
         </div>
 
         <div class="card preview-card" id="preview-section" style="display:none">
@@ -261,9 +261,13 @@
   <!-- Detail Modal -->
   <div class="modal-overlay" id="modal-overlay">
     <div class="modal" id="detail-modal">
-      <div class="modal-header">
+      <div class="modal-header" style="display:flex; justify-content:space-between; align-items:center; width:100%">
         <h3>Form Detail <span id="modal-form-id" class="chip chip-blue"></span></h3>
-        <button class="modal-close" id="modal-close">✕</button>
+        <div style="display:flex; gap:10px; align-items:center">
+          <button class="btn btn-outline" id="btn-auto-template" style="padding:4px 12px; font-size:12px;">Auto-Erase Template</button>
+          <button class="btn btn-primary" id="btn-view-digital" style="padding:4px 12px; font-size:12px;">View Digital Form</button>
+          <button class="modal-close" id="modal-close">✕</button>
+        </div>
       </div>
       <div class="modal-body">
         <div class="modal-images" id="modal-images"></div>
@@ -282,7 +286,7 @@
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <script src="/static/app.js"></script>
 </body>
 
 </html>

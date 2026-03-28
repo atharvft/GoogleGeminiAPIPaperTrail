@@ -1,0 +1,14 @@
+{
+    "registration_number": {
+        "x": 130,
+        "y": 121
+    },
+    "date_of_birth": {
+        "x": 215,
+        "y": 239
+    },
+    "name": {
+        "x": 450,
+        "y": 438
+    }
+}
