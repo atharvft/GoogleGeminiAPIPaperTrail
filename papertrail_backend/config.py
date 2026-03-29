@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env file from the papertrail_backend directory
+env_path = Path(__file__).resolve().parent / '.env'
+load_dotenv(env_path)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -22,6 +24,9 @@ class Config:
     SARVAM_VISION_OUTPUT_FORMAT: str = os.getenv("SARVAM_VISION_OUTPUT_FORMAT", "md")
     SARVAM_VISION_TIMEOUT: int = int(os.getenv("SARVAM_VISION_TIMEOUT", "240"))
     SARVAM_VISION_POLL_INTERVAL: float = float(os.getenv("SARVAM_VISION_POLL_INTERVAL", "3"))
+    
+    # Google Gemini API
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     
     # MongoDB
     MONGO_URI: str = os.getenv("MONGO_URI", "mongodb://localhost:27017/")

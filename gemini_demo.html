@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PaperTrail - Gemini API Extraction Demo</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+        }
+        .container {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #4a5568;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+        }
+        .demo-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 2px solid #e2e8f0;
+            border-radius: 10px;
+            background: #f7fafc;
+        }
+        .upload-area {
+            border: 3px dashed #cbd5e0;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            background: #edf2f7;
+            transition: all 0.3s ease;
+        }
+        .upload-area:hover {
+            border-color: #4299e1;
+            background: #e6fffa;
+        }
+        input[type="file"] {
+            margin: 20px 0;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: transform 0.2s ease;
+        }
+        button:hover {
+            transform: translateY(-2px);
+        }
+        .results {
+            margin-top: 20px;
+            display: none;
+        }
+        .field-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .field-table th, .field-table td {
+            padding: 15px;
+            text-align: left;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .field-table th {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-weight: bold;
+        }
+        .field-table tr:nth-child(even) {
+            background-color: #f8fafc;
+        }
+        .field-table tr:hover {
+            background-color: #edf2f7;
+        }
+        .confidence-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: bold;
+            color: white;
+        }
+        .high-confidence { background: #48bb78; }
+        .med-confidence { background: #ed8936; }
+        .low-confidence { background: #e53e3e; }
+        .status {
+            padding: 10px;
+            border-radius: 8px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        .status.success {
+            background: #c6f6d5;
+            color: #22543d;
+            border: 1px solid #9ae6b4;
+        }
+        .status.error {
+            background: #fed7d7;
+            color: #742a2a;
+            border: 1px solid #fc8181;
+        }
+        .method-info {
+            background: #bee3f8;
+            color: #2a69ac;
+            padding: 10px;
+            border-radius: 8px;
+            margin: 10px 0;
+            border: 1px solid #90cdf4;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 PaperTrail - Gemini API Demo</h1>
+        
+        <div class="demo-section">
+            <h2>📋 Upload Government Form</h2>
+            <div class="upload-area">
+                <p>📁 Select a government form image (Birth Certificate, Residence Certificate, etc.)</p>
+                <input type="file" id="formFile" accept="image/*">
+                <br>
+                <label for="formType">Form Type:</label>
+                <select id="formType" style="margin: 10px; padding: 8px;">
+                    <option value="birth_certificate">Birth Certificate</option>
+                    <option value="residence_certificate">Residence Certificate</option>
+                </select>
+                <br>
+                <button onclick="uploadAndExtract()">🚀 Extract with Gemini AI</button>
+            </div>
+            
+            <div id="status"></div>
+            <div id="results" class="results">
+                <h3>✨ Extracted Key-Value Pairs</h3>
+                <div id="methodInfo"></div>
+                <table id="fieldsTable" class="field-table">
+                    <thead>
+                        <tr>
+                            <th>Field Name</th>
+                            <th>Extracted Value</th>
+                            <th>Confidence</th>
+                        </tr>
+                    </thead>
+                    <tbody id="fieldsBody">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function uploadAndExtract() {
+            const fileInput = document.getElementById('formFile');
+            const formType = document.getElementById('formType').value;
+            const statusDiv = document.getElementById('status');
+            const resultsDiv = document.getElementById('results');
+            
+            if (!fileInput.files[0]) {
+                statusDiv.innerHTML = '<div class="status error">❌ Please select a file first!</div>';
+                return;
+            }
+            
+            statusDiv.innerHTML = '<div class="status">🔄 Processing with Gemini AI...</div>';
+            resultsDiv.style.display = 'none';
+            
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('form_type', formType);
+            
+            try {
+                const response = await fetch('http://127.0.0.1:8000/api/upload-form', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    statusDiv.innerHTML = '<div class="status success">✅ Extraction completed successfully!</div>';
+                    displayResults(result);
+                } else {
+                    statusDiv.innerHTML = `<div class="status error">❌ Error: ${result.message || 'Unknown error'}</div>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<div class="status error">❌ Network error: ${error.message}</div>`;
+                console.error('Upload error:', error);
+            }
+        }
+        
+        function displayResults(result) {
+            const resultsDiv = document.getElementById('results');
+            const methodInfoDiv = document.getElementById('methodInfo');
+            const fieldsBody = document.getElementById('fieldsBody');
+            
+            // Show method info
+            methodInfoDiv.innerHTML = `
+                <div class="method-info">
+                    <strong>🔧 OCR Method:</strong> ${result.ocr_method}<br>
+                    <strong>📊 Overall Confidence:</strong> ${(result.classification_confidence * 100).toFixed(1)}%<br>
+                    <strong>📂 Form Type:</strong> ${result.form_type}<br>
+                    <strong>🏢 Department:</strong> ${result.department}
+                </div>
+            `;
+            
+            // Clear previous results
+            fieldsBody.innerHTML = '';
+            
+            // Add extracted fields
+            Object.entries(result.extracted_data).forEach(([field, value]) => {
+                const confidence = result.confidence_scores[field] || 0;
+                const confidencePercent = (confidence * 100).toFixed(1);
+                
+                let confidenceClass = 'low-confidence';
+                if (confidence >= 0.8) confidenceClass = 'high-confidence';
+                else if (confidence >= 0.5) confidenceClass = 'med-confidence';
+                
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td><strong>${formatFieldName(field)}</strong></td>
+                    <td>${value || '<em>Empty</em>'}</td>
+                    <td><span class="confidence-badge ${confidenceClass}">${confidencePercent}%</span></td>
+                `;
+                fieldsBody.appendChild(row);
+            });
+            
+            resultsDiv.style.display = 'block';
+        }
+        
+        function formatFieldName(field) {
+            return field.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+        }
+    </script>
+</body>
+</html>
