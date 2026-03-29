@@ -27,6 +27,14 @@ class FormVerificationRequest(BaseModel):
     form_id: str = Field(..., description="Form document ID")
     department: str = Field(..., description="Department collection name")
     corrected_data: Dict[str, Any] = Field(..., description="Human-verified field values")
+    allow_duplicate: bool = Field(default=False, description="Allow save even when potential duplicates are found")
+
+
+class DuplicateCheckRequest(BaseModel):
+    """Request model for duplicate screening."""
+    form_id: str = Field(..., description="Form document ID")
+    department: str = Field(..., description="Department collection name")
+    corrected_data: Dict[str, Any] = Field(..., description="Current field values to check")
 
 
 class FormVerificationResponse(BaseModel):

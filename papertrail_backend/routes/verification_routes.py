@@ -6,10 +6,55 @@ Allows frontend to submit verified/corrected form data.
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any
 
-from ..database import update_form_verification, get_form_by_id
-from ..models import FormVerificationRequest, FormVerificationResponse
+from ..database import update_form_verification, get_form_by_id, find_potential_duplicates
+from ..models import DuplicateCheckRequest, FormVerificationRequest, FormVerificationResponse
 
 router = APIRouter(prefix="/api", tags=["verification"])
+
+
+def _get_duplicate_matches(form_id: str, department: str, corrected_data: Dict[str, Any]):
+    """Resolve duplicate matches for a form payload."""
+    form = get_form_by_id(form_id, department)
+
+    if not form:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Form not found: {form_id} in department: {department}"
+        )
+
+    potential_duplicates = find_potential_duplicates(
+        form.get("form_type", ""),
+        corrected_data,
+        exclude_form_id=form_id
+    )
+
+    return form, potential_duplicates
+
+
+@router.post("/check-duplicates")
+async def check_duplicates(request: DuplicateCheckRequest):
+    """Check for likely duplicates without saving the form."""
+    try:
+        form, potential_duplicates = _get_duplicate_matches(
+            request.form_id,
+            request.department,
+            request.corrected_data
+        )
+
+        return {
+            "success": True,
+            "form_type": form.get("form_type"),
+            "has_duplicates": bool(potential_duplicates),
+            "duplicate_matches": potential_duplicates,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Duplicate check failed: {str(e)}"
+        )
 
 
 @router.post("/verify-form", response_model=FormVerificationResponse)
@@ -27,13 +72,19 @@ async def verify_form(request: FormVerificationRequest):
         FormVerificationResponse: Success status and message
     """
     try:
-        # Validate that form exists
-        form = get_form_by_id(request.form_id, request.department)
-        
-        if not form:
+        _, potential_duplicates = _get_duplicate_matches(
+            request.form_id,
+            request.department,
+            request.corrected_data
+        )
+
+        if potential_duplicates and not request.allow_duplicate:
             raise HTTPException(
-                status_code=404,
-                detail=f"Form not found: {request.form_id} in department: {request.department}"
+                status_code=409,
+                detail={
+                    "message": "Potential duplicate records found. Please review before creating a new record.",
+                    "duplicate_matches": potential_duplicates,
+                }
             )
         
         # Update form with corrected data

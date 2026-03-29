@@ -1,43 +1,44 @@
 """
 ============================================================
- PaperTrail — Government Form Extraction using Gemini API
+ PaperTrail — Gemini 2.5 Flash + MongoDB Storage
 ============================================================
- MODEL   : gemini-2.5-flash  (FREE tier — no credit card)
- FREE LIMITS: 10 requests/min · 250 requests/day
- SUPPORTS:
-   1. West Bengal Birth Certificate  (English + Bengali)
-   2. Maharashtra Residence Certificate (English)
+ Extracts form data using Gemini Vision API and saves
+ directly to MongoDB using your existing database.py functions.
 
- SETUP (run once in VS Code terminal):
-   pip install google-generativeai pillow
+ COLLECTIONS USED (already defined in your database.py):
+   Birth Certificate   → civil_records_department
+   Residence Cert      → citizen_services_department
+   Every save          → audit_logs (auto)
 
- GET FREE API KEY (no credit card needed):
-   https://aistudio.google.com/app/apikey
-
- HOW TO RUN:
-   python extract_forms.py
-   → it will ask you for the image path and form type
-
- OR pass image directly:
-   python extract_forms.py path/to/filled_form.jpg
+ SETUP:
+   pip install google-genai pillow pymongo
 ============================================================
 """
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from PIL import Image
-import json
-import os
-import sys
+import json, os, sys, shutil
+from datetime import datetime
+
+# ── Import YOUR existing database functions ───────────────
+# No changes needed in database.py — we just call its functions
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from papertrail_backend.database import (
+    save_birth_certificate,
+    save_residence_certificate,
+    save_audit_log,
+)
 
 
 # ──────────────────────────────────────────────────────────
-#  STEP 1 — PASTE YOUR FREE GEMINI API KEY HERE
-#  Get it free at: https://aistudio.google.com/app/apikey
+#  CONFIG
 # ──────────────────────────────────────────────────────────
-GEMINI_API_KEY = "AIzaSyC1Ev2EBT-8aUfiBpIMIGlZKveym42NDIk"
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE"
+GEMINI_MODEL   = "gemini-2.5-flash"
 
-# gemini-2.5-flash = free, vision-capable, best on free tier (March 2026)
-GEMINI_MODEL = "gemini-2.5-flash"
+UPLOAD_FOLDER  = os.path.join(os.path.dirname(__file__), "uploads")
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
 # ──────────────────────────────────────────────────────────
@@ -49,35 +50,30 @@ You are an expert OCR system that extracts data from Indian government forms.
 This image is a filled handwritten WEST BENGAL GOVERNMENT BIRTH CERTIFICATE
 issued by the Department of Health & Family Welfare.
 
-The printed labels are in English and Bengali.
-The handwritten values filled by the applicant may be in English, Bengali, or both.
+Printed labels are in English and Bengali.
+Handwritten values may be in English, Bengali, or both.
 
 YOUR TASK:
-- Read the form carefully.
 - Extract ONLY the handwritten or filled-in values — NOT the printed label text.
-- If a field is blank or not filled, set its value to null.
-- If handwriting is unclear but you can make a reasonable guess, extract it and set "uncertain": true.
-- If you cannot read something at all, set value to null and "uncertain": true.
+- If a field is blank, set value to null.
+- If handwriting is unclear but guessable, extract it and set "uncertain": true.
+- If completely unreadable, set value to null and "uncertain": true.
 
-EXTRACT THESE EXACT FIELDS:
-
-1.  name                  — Child's full name written after the "Name:" label
-2.  sex                   — Male / Female written after the "Sex:" label
-3.  date_of_birth         — Written after "Date of Birth:" — use DD/MM/YYYY format if possible
+EXTRACT THESE FIELDS:
+1.  name                  — Child's name written after "Name:" label
+2.  sex                   — Male/Female written after "Sex:" label
+3.  date_of_birth         — Written after "Date of Birth:" in DD/MM/YYYY
 4.  place_of_birth        — Written after "Place of Birth:"
 5.  name_of_mother        — Written after "Name of Mother:"
 6.  name_of_father        — Written after "Name of Father:"
-7.  address_at_birth      — Written after "Address of the Parents at the time of Birth of the Child:"
+7.  address_at_birth      — Written after "Address of the Parents at the time of Birth..."
 8.  permanent_address     — Written after "Permanent Address of the Parents:"
 9.  registration_no       — Written after "Registration No:"
 10. date_of_registration  — Written after "Date of Registration:"
 11. date_of_issue         — Written after "Date of Issue:"
-12. local_area_body       — Written in the blank after "(Local Area/Local Body)" near the top
+12. local_area_body       — Written after "(Local Area/Local Body)" near top
 
-OUTPUT RULES:
-- Return ONLY a raw valid JSON object.
-- Do NOT include markdown, code fences, or any explanation.
-- Start your response with { and end with }
+Return ONLY raw JSON. No markdown. No explanation. Start with { end with }.
 
 {
   "form_type": "Birth Certificate",
@@ -110,32 +106,26 @@ You are an expert OCR system that extracts data from Indian government forms.
 This image is a filled handwritten GOVERNMENT OF MAHARASHTRA STATE
 APPLICATION FOR RESIDENCE CERTIFICATE.
 
-The printed labels are in English.
-The handwritten values filled by the applicant may be in English or Marathi.
+Printed labels are in English.
+Handwritten values may be in English or Marathi.
 
 YOUR TASK:
-- Read the form carefully.
 - Extract ONLY the handwritten or filled-in values — NOT the printed label text.
-- If a field is blank or not filled, set its value to null.
-- If handwriting is unclear but you can make a reasonable guess, extract it and set "uncertain": true.
-- If you cannot read something at all, set value to null and "uncertain": true.
-- For Residential Address — it may span 2 lines, combine them into one string.
+- If a field is blank, set value to null.
+- If handwriting is unclear but guessable, extract it and set "uncertain": true.
+- For Residential Address — may span 2 lines, join into one string.
 
-EXTRACT THESE EXACT FIELDS:
-
+EXTRACT THESE FIELDS:
 1. full_name               — Written after "1. Full Name:"
 2. father_husband_name     — Written after "2. Father / Husband Name:"
 3. residential_address     — Written after "3. Residential Address:" (may be 2 lines)
 4. mobile_number           — Written after "4. Mobile Number:"
 5. purpose_of_certificate  — Written after "5. Purpose of Certificate:"
-6. duration_of_residence   — Number of years written after "6. Duration of Residence (Years):"
-7. date                    — Written after "Date:" at the bottom of the form
-8. place                   — Written after "Place:" at the bottom of the form
+6. duration_of_residence   — Written after "6. Duration of Residence (Years):"
+7. date                    — Written after "Date:" at bottom
+8. place                   — Written after "Place:" at bottom
 
-OUTPUT RULES:
-- Return ONLY a raw valid JSON object.
-- Do NOT include markdown, code fences, or any explanation.
-- Start your response with { and end with }
+Return ONLY raw JSON. No markdown. No explanation. Start with { end with }.
 
 {
   "form_type": "Residence Certificate Application",
@@ -156,83 +146,80 @@ OUTPUT RULES:
 
 
 # ──────────────────────────────────────────────────────────
-#  PROMPT 3 — AUTO-DETECT (unknown form)
+#  HELPER — Parse Gemini fields into what database.py expects
+#
+#  Gemini returns:
+#    { "name": { "value": "Ramesh", "uncertain": false } }
+#
+#  database.py save functions expect two flat dicts:
+#    extracted_data    = { "name": "Ramesh" }
+#    confidence_scores = { "name": 0.95 }
 # ──────────────────────────────────────────────────────────
-AUTO_DETECT_PROMPT = """
-You are an expert OCR system that extracts data from Indian government forms.
+def parse_gemini_fields(gemini_fields: dict) -> tuple:
+    extracted_data    = {}
+    confidence_scores = {}
 
-STEP 1 — Read the title or header text of this form to identify what it is.
-STEP 2 — Extract ALL handwritten or filled-in values from every field on the form.
+    for field_key, field_info in gemini_fields.items():
+        value     = field_info.get("value")
+        uncertain = field_info.get("uncertain", False)
 
-RULES:
-- Extract ONLY values written by the applicant — NOT the printed label text itself.
-- If a field is empty, set value to null.
-- If handwriting is unclear but guessable, extract it and set "uncertain": true.
-- Use the printed label text as the JSON key (convert to snake_case, lowercase).
+        extracted_data[field_key] = value
 
-OUTPUT RULES:
-- Return ONLY a raw valid JSON object.
-- Do NOT include markdown, code fences, or any explanation.
-- Start your response with { and end with }
+        # Confidence score based on uncertainty flag
+        if value is None:
+            confidence_scores[field_key] = 0.0    # blank field
+        elif uncertain:
+            confidence_scores[field_key] = 0.45   # extracted but unsure
+        else:
+            confidence_scores[field_key] = 0.95   # confident extraction
 
-{
-  "form_type": "name of form from header",
-  "state": "state name from header",
-  "department": "department from header",
-  "detected_languages": "e.g. English and Bengali",
-  "fields": {
-    "field_name_snake_case": { "value": "extracted value or null", "uncertain": false }
-  }
-}
-"""
+    return extracted_data, confidence_scores
 
 
 # ──────────────────────────────────────────────────────────
-#  CORE EXTRACTION FUNCTION
+#  Copy image into uploads/ folder with timestamp filename
+# ──────────────────────────────────────────────────────────
+def save_image_to_uploads(original_path: str) -> str:
+    ext       = os.path.splitext(original_path)[1]
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename  = f"form_{timestamp}{ext}"
+    dest      = os.path.join(UPLOAD_FOLDER, filename)
+    shutil.copy2(original_path, dest)
+    return dest
+
+
+# ──────────────────────────────────────────────────────────
+#  GEMINI EXTRACTION
 # ──────────────────────────────────────────────────────────
 def extract_form_data(image_path: str, form_type: str = "auto") -> dict:
-    """
-    Sends image to Gemini 2.5 Flash and returns extracted fields as a dict.
-
-    Args:
-        image_path : path to filled form image (JPG / PNG / WEBP)
-        form_type  : 'birth_certificate' | 'residence_certificate' | 'auto'
-
-    Returns:
-        dict with extracted fields
-    """
-
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"Image not found: {image_path}")
 
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(GEMINI_MODEL)
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     print(f"\n  📂  Image  : {image_path}")
     img = Image.open(image_path)
     print(f"  📐  Size   : {img.size[0]} x {img.size[1]} px")
 
-    # Auto-detect form type if not specified
+    # Auto-detect
     if form_type == "auto":
         print("  🔍  Auto-detecting form type...")
-        detect_prompt = (
-            "Look at this government form image. Read only the title/header. "
-            "Reply with EXACTLY one of these words only — nothing else:\n"
-            "  birth_certificate\n"
-            "  residence_certificate\n"
-            "  unknown"
+        r = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                "Read only the title/header of this form. Reply with EXACTLY one word:\n"
+                "birth_certificate\nresidence_certificate\nunknown",
+                img
+            ],
         )
-        r = model.generate_content([detect_prompt, img])
         detected = r.text.strip().lower()
-        if "birth" in detected:
-            form_type = "birth_certificate"
-        elif "residence" in detected:
-            form_type = "residence_certificate"
-        else:
-            form_type = "unknown"
+        form_type = (
+            "birth_certificate"    if "birth"     in detected else
+            "residence_certificate" if "residence" in detected else
+            "unknown"
+        )
         print(f"  ✅  Detected: {form_type}")
 
-    # Select prompt
     if form_type == "birth_certificate":
         prompt = BIRTH_CERTIFICATE_PROMPT
         print("  📋  Prompt : West Bengal Birth Certificate")
@@ -240,40 +227,92 @@ def extract_form_data(image_path: str, form_type: str = "auto") -> dict:
         prompt = RESIDENCE_CERTIFICATE_PROMPT
         print("  📋  Prompt : Maharashtra Residence Certificate")
     else:
-        prompt = AUTO_DETECT_PROMPT
-        print("  📋  Prompt : Auto-detect (unknown form)")
+        return {"parse_error": True, "error": "Unknown form type"}
 
-    # Send to Gemini
     print("  🤖  Calling Gemini 2.5 Flash...")
-    response = model.generate_content(
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
         contents=[prompt, img],
-        generation_config=genai.GenerationConfig(
-            temperature=0.1,        # Low = deterministic factual extraction
+        config=types.GenerateContentConfig(
+            temperature=0.1,
             max_output_tokens=2048,
         )
     )
 
     raw = response.text.strip()
-
-    # Strip accidental markdown code fences
     if raw.startswith("```"):
-        lines = raw.splitlines()
-        raw = "\n".join(lines[1:-1]).strip()
+        raw = "\n".join(raw.splitlines()[1:-1]).strip()
 
-    # Parse JSON
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        print("\n  ⚠️  Gemini returned non-JSON output. Saving raw response.")
-        return {
-            "form_type": "parse_error",
-            "raw_gemini_response": raw,
-            "parse_error": True
-        }
+        return {"form_type": "parse_error", "raw_gemini_response": raw, "parse_error": True}
 
 
 # ──────────────────────────────────────────────────────────
-#  DISPLAY RESULTS IN TERMINAL
+#  SAVE TO MONGODB
+#  Calls your existing database.py functions directly
+# ──────────────────────────────────────────────────────────
+def save_to_mongodb(gemini_result: dict, image_path: str) -> str | None:
+    """
+    Saves extracted Gemini data into MongoDB.
+
+    Routing:
+      Birth Certificate   → civil_records_department     (save_birth_certificate)
+      Residence Cert      → citizen_services_department  (save_residence_certificate)
+      Both automatically  → audit_logs                   (inside save_* functions)
+    """
+    if gemini_result.get("parse_error"):
+        print("  ⚠️  Skipping DB save — parse error.")
+        return None
+
+    form_type = gemini_result.get("form_type", "").lower()
+    fields    = gemini_result.get("fields", {})
+
+    if not fields:
+        print("  ⚠️  No fields found — skipping DB save.")
+        return None
+
+    # Convert Gemini fields → flat dicts
+    extracted_data, confidence_scores = parse_gemini_fields(fields)
+
+    # Copy image to uploads folder
+    stored_path = save_image_to_uploads(image_path)
+
+    try:
+        if "birth" in form_type:
+            form_id = save_birth_certificate(
+                image_path        = stored_path,
+                extracted_data    = extracted_data,
+                confidence_scores = confidence_scores,
+            )
+            collection_name = "civil_records_department"
+
+        elif "residence" in form_type:
+            form_id = save_residence_certificate(
+                image_path        = stored_path,
+                extracted_data    = extracted_data,
+                confidence_scores = confidence_scores,
+            )
+            collection_name = "citizen_services_department"
+
+        else:
+            print(f"  ⚠️  Unknown form_type '{form_type}' — skipping.")
+            return None
+
+        print(f"\n  ✅  Saved to MongoDB")
+        print(f"  🗂️   Collection : {collection_name}")
+        print(f"  🔑  Document ID : {form_id}")
+        print(f"  📌  Status      : pending_verification")
+        return form_id
+
+    except Exception as e:
+        print(f"\n  ❌  MongoDB save failed: {e}")
+        return None
+
+
+# ──────────────────────────────────────────────────────────
+#  DISPLAY IN TERMINAL
 # ──────────────────────────────────────────────────────────
 def display_results(data: dict):
     print("\n" + "═" * 64)
@@ -281,16 +320,13 @@ def display_results(data: dict):
     print("═" * 64)
 
     if data.get("parse_error"):
-        print("  ❌ Could not parse Gemini response as JSON.")
-        print("  Raw output:")
+        print("  ❌  Parse failed.")
         print(data.get("raw_gemini_response", ""))
         return
 
-    print(f"  Form      : {data.get('form_type', '—')}")
-    print(f"  State     : {data.get('state', '—')}")
-    print(f"  Dept      : {data.get('department', '—')}")
-    if "detected_languages" in data:
-        print(f"  Languages : {data.get('detected_languages', '—')}")
+    print(f"  Form   : {data.get('form_type', '—')}")
+    print(f"  State  : {data.get('state', '—')}")
+    print(f"  Dept   : {data.get('department', '—')}")
     print("─" * 64)
 
     fields      = data.get("fields", {})
@@ -302,43 +338,30 @@ def display_results(data: dict):
         uncertain = info.get("uncertain", False)
 
         if value is None:
-            icon    = "⬜"
-            display = "(blank — not filled by applicant)"
+            icon, display = "⬜", "(blank)"
         elif uncertain:
-            icon    = "⚠️ "
-            display = str(value)
+            icon, display = "⚠️ ", str(value)
             need_review.append(label)
         else:
-            icon    = "✅"
-            display = str(value)
+            icon, display = "✅", str(value)
 
         print(f"  {icon}  {label:<34}  {display}")
 
     print("─" * 64)
-
     total  = len(fields)
     filled = sum(1 for f in fields.values() if f.get("value") is not None)
-    blank  = total - filled
-
-    if need_review:
-        print(f"\n  ⚠️  Needs human review ({len(need_review)} fields):")
-        for f in need_review:
-            print(f"      → {f}")
-
-    print(f"\n  📊  {filled}/{total} fields extracted")
-    print(f"      {blank} blank  |  {len(need_review)} flagged for review")
+    print(f"  📊  {filled}/{total} fields extracted  |  {len(need_review)} need review")
     print("═" * 64)
 
 
 # ──────────────────────────────────────────────────────────
-#  SAVE JSON
+#  SAVE LOCAL JSON
 # ──────────────────────────────────────────────────────────
-def save_json(data: dict, image_path: str) -> str:
-    out_path = os.path.splitext(image_path)[0] + "_extracted.json"
-    with open(out_path, "w", encoding="utf-8") as f:
+def save_json(data: dict, image_path: str):
+    out = os.path.splitext(image_path)[0] + "_extracted.json"
+    with open(out, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"\n  💾  Saved : {out_path}")
-    return out_path
+    print(f"  💾  JSON saved : {out}")
 
 
 # ──────────────────────────────────────────────────────────
@@ -347,58 +370,55 @@ def save_json(data: dict, image_path: str) -> str:
 def main():
     print()
     print("╔══════════════════════════════════════════════════════════╗")
-    print("║    PaperTrail — Gemini 2.5 Flash Form Extractor          ║")
-    print("║    FREE model · No credit card · 250 req/day free        ║")
+    print("║   PaperTrail — Gemini 2.5 Flash + MongoDB Storage        ║")
     print("╚══════════════════════════════════════════════════════════╝")
 
-    # Validate API key
     if GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
-        print()
-        print("  ❌  API key missing!")
-        print()
-        print("  Steps to fix:")
-        print("  1. Go to https://aistudio.google.com/app/apikey")
-        print("  2. Click 'Create API Key' (free, no credit card)")
-        print("  3. Copy the key")
-        print("  4. Open extract_forms.py in VS Code")
-        print("  5. Replace YOUR_GEMINI_API_KEY_HERE with your key")
+        print("\n  ❌  Set GEMINI_API_KEY in the script.")
+        print("  → https://aistudio.google.com/app/apikey")
         sys.exit(1)
 
-    # Get image path
+    # Image path
     if len(sys.argv) > 1:
         image_path = sys.argv[1]
     else:
         print()
-        print("  Enter the path to your filled form image:")
-        print("  Examples:")
-        print("    ./filled_birth_cert.jpg")
-        print("    C:\\Users\\You\\Desktop\\form.png")
-        image_path = input("\n  Image path: ").strip().strip('"').strip("'")
+        print("  Enter path to your filled form image:")
+        image_path = input("  Image path: ").strip().strip('"').strip("'")
 
-    # Get form type
+    # Form type
     print()
     print("  Select form type:")
     print("    1  →  West Bengal Birth Certificate")
     print("    2  →  Maharashtra Residence Certificate")
-    print("    Enter  →  Auto-detect from the image")
-    choice = input("\n  Your choice [1 / 2 / Enter]: ").strip()
+    print("    Enter  →  Auto-detect")
+    choice = input("\n  Choice [1 / 2 / Enter]: ").strip()
+    form_type = {"1": "birth_certificate", "2": "residence_certificate", "": "auto"}.get(choice, "auto")
 
-    form_type = {
-        "1": "birth_certificate",
-        "2": "residence_certificate",
-        "":  "auto",
-    }.get(choice, "auto")
+    print("\n" + "─" * 64)
 
-    # Run
-    print()
-    print("─" * 64)
     try:
+        # ── Step 1: Extract with Gemini ──────────────────────
         data = extract_form_data(image_path, form_type)
+
+        # ── Step 2: Show in terminal ─────────────────────────
         display_results(data)
+
+        # ── Step 3: Save to MongoDB ──────────────────────────
+        print("\n  💾  Saving to MongoDB...")
+        form_id = save_to_mongodb(data, image_path)
+
+        if form_id:
+            print(f"\n  🎉  Done! Document stored successfully.")
+        else:
+            print("\n  ⚠️  MongoDB save was skipped.")
+
+        # ── Step 4: Save local JSON ──────────────────────────
         save_json(data, image_path)
 
+        # ── Step 5: Print full JSON ──────────────────────────
         print()
-        print("  📄  Full JSON output:")
+        print("  📄  Full extracted JSON:")
         print("─" * 64)
         print(json.dumps(data, ensure_ascii=False, indent=2))
 
@@ -406,7 +426,7 @@ def main():
         print(f"\n  ❌  {e}")
         sys.exit(1)
     except Exception as e:
-        print(f"\n  ❌  Error: {e}")
+        print(f"\n  ❌  {e}")
         raise
 
 

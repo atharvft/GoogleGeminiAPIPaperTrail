@@ -170,6 +170,22 @@
             <div class="alert-warning" id="low-conf-alert" style="display:none">
               ⚠️ Please verify highlighted fields before submission
             </div>
+            <div class="alert-duplicate" id="duplicate-alert" style="display:none">
+              <div class="duplicate-alert-header">
+                <div class="duplicate-alert-title-row">
+                  <span class="duplicate-alert-icon" aria-hidden="true">⚠</span>
+                  <div>
+                    <strong>Duplicate Warning</strong>
+                    <span id="duplicate-alert-summary">Potential duplicate records found for this form.</span>
+                  </div>
+                </div>
+              </div>
+              <div id="duplicate-alert-list" class="duplicate-alert-list"></div>
+              <div class="duplicate-alert-actions">
+                <button class="btn btn-outline" id="duplicate-review-btn" type="button">Review Matches</button>
+                <button class="btn btn-primary btn-warning" id="duplicate-submit-anyway-btn" type="button">Submit Anyway</button>
+              </div>
+            </div>
             <div class="form-fields" id="form-fields"></div>
           </div>
           <div class="card">

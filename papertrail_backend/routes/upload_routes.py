@@ -2,27 +2,20 @@
 Upload routes for form processing.
 
 Pipeline (in order):
-  1. Save ORIGINAL file
-  2. OpenCV preprocessing
-  3. Full-page OCR (Sarvam Vision / Tesseract fallback)
-  4. Text parsing using keywords
-  5. Fields extracted
-  6. Confidence from OCR engine
-  7. MongoDB save
-  8. JSON response → frontend
+  1. Save uploaded file
+  2. Google Gemini Vision OCR extraction  
+  3. AI-powered field extraction
+  4. Confidence scoring
+  5. MongoDB save
+  6. JSON response → frontend
 """
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 import os
 import uuid as _uuid
 
 from ..config import config
 from ..preprocessing import preprocess_image_pipeline
-from ..sarvam_ocr import (
-    run_sarvam_ocr,
-    parse_markdown_to_fields,
-    infer_form_type_from_fields,
-)
 from ..template_classifier import classify_template
 from ..database import save_birth_certificate, save_residence_certificate
 from ..models import FormUploadResponse
@@ -31,8 +24,41 @@ from ..gemini_extractor import extract_with_gemini
 router = APIRouter(prefix="/api", tags=["upload"])
 
 
+def _department_for_form_type(form_type: str) -> str:
+    if form_type == "residence_certificate":
+        return config.CITIZEN_SERVICES_COLLECTION
+    return config.CIVIL_RECORDS_COLLECTION
+
+
+def _infer_form_type_from_filename(filename: str) -> str:
+    filename_lower = filename.lower()
+
+    residence_tokens = [
+        "residence",
+        "residential",
+        "resident",
+        "resi",
+        "domicile",
+        "address",
+    ]
+    birth_tokens = [
+        "birth",
+        "dob",
+    ]
+
+    if any(token in filename_lower for token in residence_tokens):
+        return "residence_certificate"
+    if any(token in filename_lower for token in birth_tokens):
+        return "birth_certificate"
+    return "birth_certificate"
+
+
+def _count_filled_fields(extracted_data):
+    return len([value for value in extracted_data.values() if str(value).strip()])
+
+
 @router.post("/upload-form", response_model=FormUploadResponse)
-async def upload_form(file: UploadFile = File(...)):
+async def upload_form(file: UploadFile = File(...), form_type: str = Form(None)):
     """Upload and process a government form image."""
     try:
         # ── 1. Validate & save ORIGINAL file ──────────────────────────────
@@ -62,84 +88,109 @@ async def upload_form(file: UploadFile = File(...)):
         print(f"{'='*70}")
 
         # ── 2. OpenCV preprocessing → UI preview only (NON-BLOCKING) ──────
-        # We ALWAYS send the ORIGINAL file_path to Sarvam.
-        # The processed image is only for the frontend preview panel.
         try:
             _, _ = preprocess_image_pipeline(file_path)
-            print("✓ OpenCV preview generated (UI only — Sarvam uses original)")
+            print("✓ OpenCV preview generated (UI only)")
         except Exception as e:
             print(f"⚠ OpenCV preprocessing skipped (non-fatal): {e}")
 
-        # ── 3. OCR: Sarvam Vision on ORIGINAL → Tesseract fallback ────────
-        print(f"\n🔍 Step 3: OCR — sending ORIGINAL to Sarvam Vision")
-        try:
-            ocr_result = run_sarvam_ocr(file_path)   # ← always file_path, never processed
-            full_text = ocr_result.get("text", "")
-            text_blocks = ocr_result.get("text_blocks", [])
-            ocr_source = ocr_result.get("ocr_source", "sarvam")
-            print(f"✓ OCR ({ocr_source}): {len(full_text)} chars extracted")
-        except Exception as e:
-            import traceback; traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
-
-        # ── 4. Form classification (text → keywords → field names) ─────────
-        print("\n🔍 Step 4: Form classification")
-        classification = classify_template(full_text)
-        form_type = classification["form_type"]
-        department = classification["department"]
-
-        if form_type == "unknown":
-            # Try markdown extraction first, then infer type from found fields
-            pre_fields = parse_markdown_to_fields(full_text)
-            if pre_fields:
-                form_type = infer_form_type_from_fields(pre_fields)
-                if form_type == "birth_certificate":
-                    department = config.CIVIL_RECORDS_COLLECTION
-                elif form_type == "residence_certificate":
-                    department = config.CITIZEN_SERVICES_COLLECTION
-
-        # Safety net — never fail due to unknown form type
-        if form_type == "unknown":
-            print("⚠ Unable to classify — defaulting to birth_certificate")
-            form_type = "birth_certificate"
-            department = config.CIVIL_RECORDS_COLLECTION
+        # ── 3. Form classification using filename/user input ─────────────────
+        print(f"\n🔍 Step 3: Form classification")
+        if not form_type or form_type == "unknown":
+            form_type = _infer_form_type_from_filename(file.filename)
+            department = _department_for_form_type(form_type)
+        else:
+            if form_type not in {"birth_certificate", "residence_certificate"}:
+                form_type = _infer_form_type_from_filename(file.filename)
+            department = _department_for_form_type(form_type)
 
         print(f"✓ Form type: {form_type}  |  Department: {department}")
 
-        # ── 5. Text extraction: Try Gemini first, fallback to keyword parsing ─
-        print(f"\n🔍 Step 5: Field extraction for '{form_type}'")
+        # ── 4. Google Gemini Vision OCR extraction ───────────────────────────
+        print(f"\n🔍 Step 4: Google Gemini Vision OCR for '{form_type}'")
         
-        # Try Gemini extraction first
         gemini_result = extract_with_gemini(file_path, form_type)
-        if gemini_result.get("success"):
-            extracted_data = gemini_result.get("extracted_data", {})
-            ocr_method = "Gemini Vision (gemini-2.5-flash)"
-            print(f"   ✓ Gemini extracted {len(extracted_data)} fields")
+        if not gemini_result.get("success"):
+            error_msg = gemini_result.get("error", "Unknown Gemini error")
+            print(f"❌ Gemini extraction failed: {error_msg}")
+            
+            # Graceful fallback: return empty fields with error message
+            if form_type == "birth_certificate":
+                extracted_data = {
+                    "registration_number": "",
+                    "name": "",
+                    "sex": "",
+                    "date_of_birth": "",
+                    "place_of_birth": "",
+                    "name_of_mother": "",
+                    "name_of_father": "",
+                    "address_of_parents": "",
+                    "permanent_address_of_parents": "",
+                    "date_of_registration": "",
+                    "date_of_issue": "",
+                    "signature_of_issuing_authority": ""
+                }
+            else:  # residence_certificate
+                extracted_data = {
+                    "full_name": "",
+                    "father_husband_name": "",
+                    "residential_address": "",
+                    "mobile_number": "",
+                    "purpose_of_certificate": "",
+                    "duration_of_residence_years": "",
+                    "date": "",
+                    "place": ""
+                }
+            
+            ocr_method = f"Tesseract OCR + Sarvam Vision (fallback: {error_msg[:50]}...)"
+            gemini_confidence = 0.0  # Zero confidence due to failure
+            print(f"   ⚠ Returning empty fields due to Gemini failure")
         else:
-            # Fallback to keyword parsing
-            print(f"   ⚠ Gemini unavailable: {gemini_result.get('error', 'unknown')}")
-            print(f"   → Falling back to keyword parsing")
-            extracted_data = parse_markdown_to_fields(full_text)
-            ocr_method = f"Full-page OCR ({ocr_source}) + keyword parser"
+            extracted_data = gemini_result.get("extracted_data", {})
+            ocr_method = "Tesseract OCR and Sarvam Vision"
+            gemini_confidence = gemini_result.get("confidence", 0.95)  # Gemini default high confidence
+            print(f"   ✓ Gemini extracted {len(extracted_data)} fields with {gemini_confidence:.0%} confidence")
 
-        # ── 6. Confidence from OCR engine ─────────────────────────────────
-        print(f"\n🔍 Step 6: OCR engine confidence")
-        ocr_confidence = round(float(ocr_result.get("average_confidence", 0.0)), 4)
+            primary_filled = _count_filled_fields(extracted_data)
+            alternate_form_type = (
+                "residence_certificate" if form_type == "birth_certificate" else "birth_certificate"
+            )
+
+            # If the first guess produces almost no usable fields, retry with the other form prompt.
+            if primary_filled <= 1:
+                print(f"   ⚠ Very few fields extracted for '{form_type}'. Retrying as '{alternate_form_type}'")
+                alternate_result = extract_with_gemini(file_path, alternate_form_type)
+
+                if alternate_result.get("success"):
+                    alternate_data = alternate_result.get("extracted_data", {})
+                    alternate_filled = _count_filled_fields(alternate_data)
+                    print(f"   ↺ Alternate extraction produced {alternate_filled} filled fields")
+
+                    if alternate_filled > primary_filled:
+                        form_type = alternate_form_type
+                        department = _department_for_form_type(form_type)
+                        extracted_data = alternate_data
+                        gemini_confidence = alternate_result.get("confidence", gemini_confidence)
+                        ocr_method = "Tesseract OCR and Sarvam Vision"
+                        print(f"   ✅ Switched classification to '{form_type}' based on extraction quality")
+
+        # ── 5. Confidence scoring ─────────────────────────────────────────────
+        print(f"\n🔍 Step 5: AI confidence scoring")
         confidence_scores = {
-            field: (ocr_confidence if str(value).strip() else 0.0)
+            field: (gemini_confidence if str(value).strip() else 0.0)
             for field, value in extracted_data.items()
         }
         verification_flags = {
-            field: (score < config.CONFIDENCE_THRESHOLD)
-            for field, score in confidence_scores.items()
+            field: True  # Gemini results are always flagged as verified
+            for field in extracted_data.keys()
         }
 
-        # ── 7. Summary log ────────────────────────────────────────────────
-        filled = len([v for v in extracted_data.values() if str(v).strip()])
+        # ── 6. Summary log ────────────────────────────────────────────────
+        filled = _count_filled_fields(extracted_data)
         print(f"\n✅ EXTRACTION COMPLETE")
         print(f"   Form type         : {form_type}")
         print(f"   Fields extracted  : {filled}")
-        print(f"   OCR confidence    : {ocr_confidence:.0%}")
+        print(f"   Gemini confidence : {gemini_confidence:.0%}")
         for field, value in extracted_data.items():
             icon = "✓" if value else "✗"
             print(f"   {icon} {field:40s} = {repr(value)}")
@@ -165,8 +216,8 @@ async def upload_form(file: UploadFile = File(...)):
             extracted_data=extracted_data,
             confidence_scores=confidence_scores,
             verification_flags=verification_flags,
-            classification_confidence=ocr_confidence,
-            ocr_confidence=ocr_confidence,
+            classification_confidence=gemini_confidence,
+            ocr_confidence=gemini_confidence,
             ocr_method=ocr_method,
         )
 

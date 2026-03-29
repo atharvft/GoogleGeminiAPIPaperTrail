@@ -19,6 +19,9 @@ const state = {
   department: '',
   classificationConf: 0,
   auditRecords: [],
+  duplicateMatches: [],
+  duplicateOverride: false,
+  duplicateCheckTimer: null,
 };
 
 /* ─── Utils ──────────────────────────────────────── */
@@ -38,6 +41,15 @@ function formatDate(iso) {
     day: '2-digit', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
   });
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function fieldDisplayName(key) {
@@ -85,6 +97,117 @@ function departmentDisplayName(dept) {
     citizen_services_department: 'Citizen Services Department',
   };
   return names[dept] || dept || '—';
+}
+
+function renderDuplicateAlert() {
+  const alert = document.getElementById('duplicate-alert');
+  const list = document.getElementById('duplicate-alert-list');
+  const summary = document.getElementById('duplicate-alert-summary');
+
+  if (!state.duplicateMatches.length) {
+    alert.style.display = 'none';
+    list.innerHTML = '';
+    if (summary) {
+      summary.textContent = 'Potential duplicate records found for this form.';
+    }
+    return;
+  }
+
+  if (summary) {
+    const matchCount = state.duplicateMatches.length;
+    summary.textContent = `${matchCount} potential duplicate${matchCount > 1 ? 's' : ''} found. Review the warning below or submit anyway if this is a new record.`;
+  }
+
+  list.innerHTML = state.duplicateMatches.map(match => `
+    <div class="duplicate-match">
+      <strong>${escapeHtml(match.matched_name || 'Unknown')}</strong>
+      <div class="duplicate-match-meta">
+        Date: ${escapeHtml(match.matched_date || '—')} ·
+        Department: ${escapeHtml(departmentDisplayName(match.department))} ·
+        Status: ${escapeHtml(match.status || '—')} ·
+        Form ID: ${escapeHtml(match.form_id || '—')}
+      </div>
+    </div>
+  `).join('');
+
+  alert.style.display = 'block';
+}
+
+function clearDuplicateAlert() {
+  if (state.duplicateCheckTimer) {
+    clearTimeout(state.duplicateCheckTimer);
+    state.duplicateCheckTimer = null;
+  }
+  state.duplicateMatches = [];
+  state.duplicateOverride = false;
+  renderDuplicateAlert();
+}
+
+function resetFormState() {
+  state.formId = null;
+  state.originalImage = null;
+  state.processedImage = null;
+  state.originalFilename = '';
+  state.extractedFields = {};
+  state.finalFields = {};
+  state.confidenceScores = {};
+  state.verificationFlags = {};
+  state.formType = '';
+  state.department = '';
+  state.classificationConf = 0;
+  state.ocrMethod = '';
+  clearDuplicateAlert();
+}
+
+function scheduleDuplicateCheck() {
+  if (state.duplicateCheckTimer) {
+    clearTimeout(state.duplicateCheckTimer);
+  }
+
+  state.duplicateCheckTimer = setTimeout(() => {
+    checkDuplicates();
+  }, 350);
+}
+
+async function checkDuplicates() {
+  const payload = {
+    form_id: state.formId,
+    department: state.department,
+    corrected_data: state.finalFields,
+  };
+
+  if (!payload.form_id || !payload.department) return;
+
+  const nameValue = state.formType === 'birth_certificate'
+    ? state.finalFields.name
+    : (state.finalFields.full_name || state.finalFields.name);
+  const dateValue = state.formType === 'birth_certificate'
+    ? state.finalFields.date_of_birth
+    : (state.finalFields.date || state.finalFields.date_of_birth);
+
+  if (!String(nameValue || '').trim() || !String(dateValue || '').trim()) {
+    clearDuplicateAlert();
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API}/check-duplicates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      throw new Error('Duplicate check failed');
+    }
+
+    const data = await res.json();
+    state.duplicateMatches = data.duplicate_matches || [];
+    state.duplicateOverride = false;
+    renderDuplicateAlert();
+  } catch (err) {
+    console.error('Duplicate check error:', err);
+  }
 }
 
 /* ─── Navigation ─────────────────────────────────── */
@@ -136,6 +259,7 @@ fileInput.addEventListener('change', () => {
 });
 
 function handleFileSelect(file) {
+  resetFormState();
   state.originalFilename = file.name;
   const reader = new FileReader();
   reader.onload = e => {
@@ -151,7 +275,7 @@ function handleFileSelect(file) {
 const PIPELINE_STEPS = [
   'Upload Image',
   'OpenCV preprocessing',
-  'Gemini Vision OCR',
+  'Tesseract OCR and Sarvam Vision',
   'Text parsing & field extraction',
   'Fields extracted',
   'Confidence from AI engine',
@@ -218,7 +342,7 @@ async function uploadToBackend(file) {
     state.extractedFields = data.extracted_data || {};
     state.confidenceScores = data.confidence_scores || {};
     state.verificationFlags = data.verification_flags || {};
-    state.ocrMethod = data.ocr_method || 'Coordinate OCR (PaddleOCR)';
+    state.ocrMethod = data.ocr_method || 'Tesseract OCR and Sarvam Vision';
     state.originalImage = document.getElementById('original-preview').src;
     state.processedImage = document.getElementById('original-preview').src;
 
@@ -264,7 +388,7 @@ document.getElementById('reset-btn').addEventListener('click', () => {
   dropZone.style.display = 'block';
   previewSec.style.display = 'none';
   document.getElementById('pipeline-steps').innerHTML = '';
-  state.formId = null;
+  resetFormState();
 });
 
 document.getElementById('proceed-btn').addEventListener('click', async () => {
@@ -277,6 +401,7 @@ async function loadReviewData() {
   // Set images
   document.getElementById('rv-original').src = state.originalImage || '';
   document.getElementById('rv-processed').src = state.processedImage || '';
+  renderDuplicateAlert();
 
   // Tab switching
   document.querySelectorAll('.img-tab').forEach(tab => {
@@ -291,6 +416,7 @@ async function loadReviewData() {
   // Data is already loaded from upload response - just render
   renderFormFields();
   renderRoutingInfo();
+  scheduleDuplicateCheck();
 }
 
 function renderRoutingInfo() {
@@ -312,7 +438,9 @@ function renderRoutingInfo() {
     };
     state.formType = sel.value;
     state.department = deptMap[sel.value];
+    clearDuplicateAlert();
     document.getElementById('routing-dept').textContent = departmentDisplayName(state.department);
+    scheduleDuplicateCheck();
   });
 }
 
@@ -423,6 +551,8 @@ function renderFormFields() {
 
     document.getElementById('field-' + key).addEventListener('input', e => {
       state.finalFields[key] = e.target.value;
+      clearDuplicateAlert();
+      scheduleDuplicateCheck();
     });
   });
 
@@ -435,11 +565,24 @@ document.getElementById('submit-btn').addEventListener('click', async () => {
   await submitVerifiedForm();
 });
 
+document.getElementById('duplicate-review-btn').addEventListener('click', async () => {
+  const firstMatch = state.duplicateMatches[0];
+  if (!firstMatch) return;
+  await openModal(firstMatch.form_id, firstMatch.department);
+});
+
+document.getElementById('duplicate-submit-anyway-btn').addEventListener('click', async () => {
+  if (!state.duplicateMatches.length) return;
+  state.duplicateOverride = true;
+  await submitVerifiedForm();
+});
+
 async function submitVerifiedForm() {
   const payload = {
     form_id: state.formId,
     department: state.department,
     corrected_data: state.finalFields,
+    allow_duplicate: state.duplicateOverride,
   };
 
   try {
@@ -452,11 +595,25 @@ async function submitVerifiedForm() {
     
     if (!res.ok) {
       const errorData = await res.json();
-      throw new Error(errorData.detail || 'Verification failed');
+
+      if (res.status === 409) {
+        state.duplicateMatches = errorData.detail?.duplicate_matches || [];
+        state.duplicateOverride = false;
+        renderDuplicateAlert();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+
+      throw new Error(
+        typeof errorData.detail === 'string'
+          ? errorData.detail
+          : errorData.detail?.message || 'Verification failed'
+      );
     }
     
     const data = await res.json();
     console.log('Form verified:', data);
+    clearDuplicateAlert();
     
   } catch (err) {
     console.error('Verification error:', err);
@@ -512,7 +669,7 @@ document.getElementById('new-form-btn').addEventListener('click', () => {
   dropZone.style.display = 'block';
   previewSec.style.display = 'none';
   document.getElementById('pipeline-steps').innerHTML = '';
-  state.formId = null;
+  resetFormState();
   navigate('upload');
 });
 
